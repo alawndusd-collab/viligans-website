@@ -1,20 +1,23 @@
 // Main JavaScript for Viligans Command Corporation Website
+// NEMT Services for Veterans and Rural Wyoming Residents
 
 document.addEventListener('DOMContentLoaded', function() {
     // Mobile Navigation Toggle
     const hamburger = document.querySelector('.hamburger');
     const navMenu = document.querySelector('.nav-menu');
 
-    hamburger.addEventListener('click', function() {
-        hamburger.classList.toggle('active');
-        navMenu.classList.toggle('active');
-    });
+    if (hamburger && navMenu) {
+        hamburger.addEventListener('click', function() {
+            hamburger.classList.toggle('active');
+            navMenu.classList.toggle('active');
+        });
 
-    // Close mobile menu when clicking on a link
-    document.querySelectorAll('.nav-link').forEach(n => n.addEventListener('click', () => {
-        hamburger.classList.remove('active');
-        navMenu.classList.remove('active');
-    }));
+        // Close mobile menu when clicking on a link
+        document.querySelectorAll('.nav-link').forEach(n => n.addEventListener('click', () => {
+            hamburger.classList.remove('active');
+            navMenu.classList.remove('active');
+        }));
+    }
 
     // Smooth scrolling for anchor links
     document.querySelectorAll('a[href^="#"]').forEach(anchor => {
@@ -41,12 +44,14 @@ document.addEventListener('DOMContentLoaded', function() {
     window.addEventListener('scroll', function() {
         let scrollTop = window.pageYOffset || document.documentElement.scrollTop;
         
-        if (scrollTop > 100) {
-            header.style.background = 'rgba(255, 255, 255, 0.95)';
-            header.style.backdropFilter = 'blur(10px)';
-        } else {
-            header.style.background = '#ffffff';
-            header.style.backdropFilter = 'none';
+        if (header) {
+            if (scrollTop > 100) {
+                header.style.background = 'rgba(255, 255, 255, 0.95)';
+                header.style.backdropFilter = 'blur(10px)';
+            } else {
+                header.style.background = '#ffffff';
+                header.style.backdropFilter = 'none';
+            }
         }
         
         lastScrollTop = scrollTop;
@@ -129,11 +134,30 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    // Veteran status handler
+    const veteranStatusRadios = document.querySelectorAll('input[name="veteran-status"]');
+    const militaryBranchGroup = document.querySelector('[data-military-branch-group]');
+    
+    if (veteranStatusRadios.length > 0) {
+        veteranStatusRadios.forEach(radio => {
+            radio.addEventListener('change', function() {
+                if (militaryBranchGroup) {
+                    if (this.value === 'yes') {
+                        militaryBranchGroup.style.display = 'block';
+                        militaryBranchGroup.querySelector('select').setAttribute('required', 'required');
+                    } else {
+                        militaryBranchGroup.style.display = 'none';
+                        militaryBranchGroup.querySelector('select').removeAttribute('required');
+                    }
+                }
+            });
+        });
+    }
+
     // Emergency contact click tracking
     document.querySelectorAll('a[href^="tel:"]').forEach(link => {
         link.addEventListener('click', function() {
-            // Track emergency contact usage
-            console.log('Emergency contact clicked:', this.href);
+            trackEvent('emergency_contact_clicked', { phone: this.href });
         });
     });
 
@@ -145,10 +169,27 @@ document.addEventListener('DOMContentLoaded', function() {
             serviceSelect.value = urlParams.get('service');
         }
     }
+    
+    if (urlParams.has('referral')) {
+        const referralField = document.querySelector('#referral-source');
+        if (referralField) {
+            referralField.value = urlParams.get('referral');
+        }
+    }
 });
 
+// Track user events for analytics
+function trackEvent(eventName, eventData = {}) {
+    console.log(`Event: ${eventName}`, eventData);
+    
+    // Send to analytics endpoint if available
+    if (window.gtag) {
+        gtag('event', eventName, eventData);
+    }
+}
+
 // Form submission handler
-function handleFormSubmission(form) {
+async function handleFormSubmission(form) {
     const formData = new FormData(form);
     const data = Object.fromEntries(formData);
     
@@ -178,28 +219,169 @@ function handleFormSubmission(form) {
         return;
     }
     
+    // Validate Medicaid/Insurance eligibility if required
+    if (!validateInsuranceEligibility(data)) {
+        return;
+    }
+    
     // Show loading state
     const submitButton = form.querySelector('button[type="submit"]');
     const originalText = submitButton.textContent;
     submitButton.textContent = 'Scheduling...';
     submitButton.disabled = true;
     
-    // Simulate form submission (replace with actual API call)
-    setTimeout(() => {
+    try {
+        // Submit form to backend API
+        const response = await submitFormToAPI(data);
+        
+        if (response.ok) {
+            const result = await response.json();
+            
+            // Show success message
+            showNotification('Transportation scheduled successfully! We will contact you within 2 hours to confirm details.', 'success');
+            
+            // Track successful booking
+            trackEvent('transportation_booked', {
+                service_type: data['service-type'],
+                veteran: data['veteran-status'] || 'not-specified'
+            });
+            
+            // Send confirmation email
+            await sendConfirmationEmail(data);
+            
+            // Reset form
+            form.reset();
+            
+            // Redirect to confirmation page if URL is provided
+            if (result.confirmation_url) {
+                setTimeout(() => {
+                    window.location.href = result.confirmation_url;
+                }, 2000);
+            }
+        } else {
+            const error = await response.json();
+            showNotification(error.message || 'Failed to schedule transportation. Please try again.', 'error');
+        }
+    } catch (error) {
+        console.error('Form submission error:', error);
+        showNotification('An error occurred while scheduling. Please try again or call us directly.', 'error');
+    } finally {
         // Reset button
         submitButton.textContent = originalText;
         submitButton.disabled = false;
+    }
+}
+
+// Validate insurance/Medicaid eligibility
+function validateInsuranceEligibility(data) {
+    const insurance = data.insurance || '';
+    
+    // If insurance is required and not provided
+    if (!insurance || insurance.trim() === '') {
+        showNotification('Please specify your insurance provider. Viligans specializes in Medicaid-funded transportation.', 'warning');
+        return false;
+    }
+    
+    // Add validation rules specific to your coverage
+    const acceptedProviders = ['medicaid', 'medicare', 'tricare', 'va', 'private'];
+    const insuranceNormalized = insurance.toLowerCase();
+    
+    if (!acceptedProviders.some(provider => insuranceNormalized.includes(provider))) {
+        showNotification('We specialize in Medicaid and veteran benefit coverage. Please call us to verify coverage.', 'warning');
+    }
+    
+    return true;
+}
+
+// Submit form data to backend API
+async function submitFormToAPI(data) {
+    // Prepare data for backend
+    const requestData = {
+        patient: {
+            name: data['patient-name'],
+            phone: data.phone,
+            email: data.email || null,
+            veteran_status: data['veteran-status'] || 'not-specified',
+            military_branch: data['military-branch'] || null
+        },
+        transport: {
+            pickup_address: data['pickup-address'],
+            destination: data.destination,
+            appointment_date: data['appointment-date'],
+            appointment_time: data['appointment-time'],
+            service_type: data['service-type'],
+            special_needs: data['special-needs'] || null
+        },
+        insurance: {
+            provider: data.insurance || null,
+            policy_number: data['policy-number'] || null
+        },
+        referral_source: data['referral-source'] || null,
+        submitted_at: new Date().toISOString()
+    };
+    
+    try {
+        const response = await fetch('/api/transportation-requests', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: JSON.stringify(requestData)
+        });
         
-        // Show success message
-        showNotification('Transportation scheduled successfully! We will contact you within 2 hours to confirm details.', 'success');
+        return response;
+    } catch (error) {
+        console.error('API submission failed:', error);
+        throw error;
+    }
+}
+
+// Send confirmation email
+async function sendConfirmationEmail(data) {
+    const emailData = {
+        recipient_email: data.email || 'aldavis@viliganscommandcorp.com',
+        recipient_name: data['patient-name'],
+        subject: 'Transportation Request Confirmation - Viligans Command Corporation',
+        request_details: {
+            patient_name: data['patient-name'],
+            phone: data.phone,
+            pickup_address: data['pickup-address'],
+            destination: data.destination,
+            appointment_date: data['appointment-date'],
+            appointment_time: data['appointment-time'],
+            service_type: data['service-type'],
+            special_needs: data['special-needs'] || 'None specified',
+            insurance: data.insurance || 'Not specified',
+            veteran_status: data['veteran-status'] || 'Not specified',
+            military_branch: data['military-branch'] || 'N/A'
+        },
+        send_to_admin: true,
+        admin_email: 'aldavis@viliganscommandcorp.com'
+    };
+    
+    try {
+        const response = await fetch('/api/send-email', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            body: JSON.stringify(emailData)
+        });
         
-        // Reset form
-        form.reset();
-        
-        // Send confirmation email (simulate)
-        sendConfirmationEmail(data);
-        
-    }, 2000);
+        if (response.ok) {
+            console.log('Confirmation email sent successfully');
+            trackEvent('confirmation_email_sent', { 
+                patient_name: data['patient-name'] 
+            });
+        } else {
+            console.warn('Failed to send confirmation email');
+        }
+    } catch (error) {
+        console.error('Email sending failed:', error);
+        // Don't show error to user - booking is already confirmed
+    }
 }
 
 // Notification system
@@ -214,8 +396,8 @@ function showNotification(message, type = 'info') {
     notification.innerHTML = `
         <div class="notification-content">
             <i class="fas ${getNotificationIcon(type)}"></i>
-            <span>${message}</span>
-            <button class="notification-close">&times;</button>
+            <span>${escapeHtml(message)}</span>
+            <button class="notification-close" aria-label="Close notification">&times;</button>
         </div>
     `;
     
@@ -226,7 +408,7 @@ function showNotification(message, type = 'info') {
         right: 20px;
         background: ${getNotificationColor(type)};
         color: white;
-        padding: 0;
+        padding: 16px 16px;
         border-radius: 8px;
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
         z-index: 10000;
@@ -253,6 +435,18 @@ function showNotification(message, type = 'info') {
     }, 5000);
 }
 
+// Escape HTML to prevent XSS
+function escapeHtml(text) {
+    const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    };
+    return text.replace(/[&<>"']/g, m => map[m]);
+}
+
 function getNotificationIcon(type) {
     switch(type) {
         case 'success': return 'fa-check-circle';
@@ -269,38 +463,6 @@ function getNotificationColor(type) {
         case 'warning': return '#f59e0b';
         default: return '#0ea5e9';
     }
-}
-
-// Email confirmation simulation
-function sendConfirmationEmail(data) {
-    const emailData = {
-        to: 'aldavis@viliganscommandcorp.com',
-        subject: 'New NEMT Transportation Request',
-        body: `
-            New transportation request received:
-            
-            Patient: ${data['patient-name']}
-            Phone: ${data.phone}
-            Pickup: ${data['pickup-address']}
-            Destination: ${data.destination}
-            Date: ${data['appointment-date']}
-            Time: ${data['appointment-time']}
-            Service Type: ${data['service-type']}
-            Special Needs: ${data['special-needs'] || 'None specified'}
-            Insurance: ${data.insurance || 'Not specified'}
-            
-            Please contact the patient within 2 hours to confirm details.
-        `
-    };
-    
-    console.log('Email would be sent:', emailData);
-    
-    // In a real implementation, this would make an API call to send the email
-    // fetch('/api/send-email', {
-    //     method: 'POST',
-    //     headers: { 'Content-Type': 'application/json' },
-    //     body: JSON.stringify(emailData)
-    // });
 }
 
 // Add CSS animations
@@ -361,7 +523,7 @@ document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
         const hamburger = document.querySelector('.hamburger');
         const navMenu = document.querySelector('.nav-menu');
-        if (navMenu.classList.contains('active')) {
+        if (navMenu && navMenu.classList.contains('active')) {
             hamburger.classList.remove('active');
             navMenu.classList.remove('active');
         }
@@ -374,9 +536,11 @@ if ('IntersectionObserver' in window) {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
                 const img = entry.target;
-                img.src = img.dataset.src;
-                img.classList.remove('lazy');
-                imageObserver.unobserve(img);
+                if (img.dataset.src) {
+                    img.src = img.dataset.src;
+                    img.classList.remove('lazy');
+                    imageObserver.unobserve(img);
+                }
             }
         });
     });
@@ -394,7 +558,7 @@ if ('serviceWorker' in navigator) {
                 console.log('ServiceWorker registration successful');
             })
             .catch(function(err) {
-                console.log('ServiceWorker registration failed');
+                console.log('ServiceWorker registration failed:', err);
             });
     });
 }
